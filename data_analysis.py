@@ -1,45 +1,112 @@
-import unittest
-import os
+"""
+Icarus High Pressure Jump log files analysis software
+author: Valentyn Stadnytskyi
+Date: June 2019- July 2019
+
+How it supposed to work.
+
+The class Dataset points at a logging directory.
+The directory will have 1 folder:
+- buffer_files
+    - time_stamp_period_type-of-trace.csv (example: 1564501923.8782883_0_depre.csv
+        -> where time = 1564501923.8782883, period = 0 and type-of-data = depre (depressure event))
+and 3 files
+- experiment.log
+- experiment.pickle - a pickled version of processed experiment.log file.
+- experiment_parameters.log - a dump of all variable from all modules mostly for debugging purposes.
+"""
+
+__version__ = '0.0.2'
 from matplotlib import pyplot as plt
 from numpy import gradient, transpose, genfromtxt, nanmean, argwhere, where, nan, isnan, asarray
-from pdb import pm
-plt.ion()
+import os
+import pickle
 
-folder = '/Users/femto-13/All-Projects-on-femto/NMR-Pressure-Jump/icarus_software/log/'
-folder = '/Users/femto-13/NMR_data/2019-04-30-18-45-20-i2-50/'
-folder = '/Users/femto-13/NMR_data/2019-05-06-19-30-18-spirit-122inches/'
-folder = '/Users/femto-13/NMR_data/2019-05-08-09-20-43-i2-50-restrictor/'
+class Dataset():
+    def __init__(self):
+        ### Log folder related
+        self.folder = None #the pointer at the log folder
 
-class Icarus_Data_Analysis():
+        ###Log file related
+        self.log_header = None #the header retrieved from experiment.log
+        self.log_data = None
+        self.log_length = 0
+        self.description = ''
+        #Traces
+        #a dictionary of length for each trace type.
+        self.trace_length = {'pre':None, 'depre':None, 'period': None, 'pump':None, 'meanbit3': None, 'cooling': None}
+        #a dictionary of lists of different trace types.
+        self.trace_lists = {'pre':None, 'depre':None, 'period': None, 'pump':None, 'meanbit3': None, 'cooling': None}
 
-    def __init__(self,folder = ''):
-        self.folder = folder
+        #auxiliry variables
+        self.i = 0
 
     def init(self):
-        f = open(self.folder + 'experiment.log', "r")
-        a = f.readline()
-        a = f.readline().replace('b','').replace('\n','').replace(' ','').replace("'","")
-        self.log_header = a.split(',')
+        from time import time
+        import os
+        t1 = time()
+        self.is_init_done = False
+        if self.folder is not None:
+            #check if the folder path ends with '/' and add if it is not.
+            if self.folder[-1] != '/':
+                self.folder += '/'
+            #get the list of all trace types and put in appropriate dictionary entry
+            for key in self.trace_lists.keys():
+                self.trace_lists[key] = self.get_lst(self.folder, key)
+                self.trace_length[key] = len(self.trace_lists[key])
+            #get log_header
+            self.log_header = self.log_read_header(self.folder)
+            #check if pickle file exist and load it
+            if os.path.exists(self.folder + 'experiment.pickle'):
+                print('the experiment.pickle file in the folder {} was detected and will be uploaded'.format(self.folder))
+                self.log_data = self.load_pickled_log(self.folder)
+            else:
+                info('the pickle file in the folder {} was NOT detected and the processing of the raw .log file is initiated'.format(self.folder))
+                self.log_data = self.log_read_raw_data(self.folder)
+                self.dump_to_picle_file(self.log_data)
+            self.log_length = self.log_data.shape[0]
+            self.is_init_done = True
+        else:
+            self.is_init_done  = False
 
-        self.lists = {}
-        self.lists['cooling'] = self.get_lst(self.folder, 'cooling')
-        self.lists['pre'] = self.get_lst(self.folder, 'pre')
-        self.lists['depre'] = self.get_lst(self.folder, 'depre')
-        self.lists['pump'] = self.get_lst(self.folder, 'pump')
-        self.lists['period'] = self.get_lst(self.folder, 'period')
-        self.lists['meanbit3'] = self.get_lst(self.folder, 'meanbit3')
+        t2 = time()
+        dt = t2-t1
+        print('Init of Dataset from folder = {} has status {}. It took {} seconds.'.format(self.folder,self.is_init_done,dt))
 
-        self.history_log = genfromtxt(self.folder + 'experiment.log', delimiter = ',', skip_header = 2)
+    def dump_to_picle_file(data = None):
+        from pickle import dump, HIGHEST_PROTOCOL
+        if data is not None:
+            with open(self.folder + 'experiment.pickle', 'wb') as handle:
+                dump(self.log_data, handle, protocol=HIGHEST_PROTOCOL)
 
-        self.period = self.combine_log_entries(self.history_log)
+    def log_read_header(self, folder):
+        with open(folder + 'experiment.log', "r") as f:
+            a = f.readline()
+            a = f.readline().replace('b','').replace('\n','').replace(' ','').replace("'","")
+            header = a.split(',')
+        return header
 
-        self.max_period = self.period[0]
+    def log_read_raw_data(self, folder):
+        """
+        read log folder:
+        create
+        """
+        raw_data = genfromtxt(folder + 'experiment.log', delimiter = ',', skip_header = 2)
+        data = self.combine_log_entries(data)
+        return data
 
+    def load_pickled_log(self, folder):
+        """
+        reads pickled file from the folder and
+        """
+        with open(self.folder + 'experiment.pickle', 'rb') as file:
+            log_data = pickle.load(file)
+        return log_data
 
     def get_lst(self,folder = '', type = 'cooling'):
         from numpy import genfromtxt
         import os
-        dir_lst = os.listdir(folder + "/buffer_files/")
+        dir_lst = os.listdir(folder + "buffer_files/")
         temp_lst = []
         for item in dir_lst:
             if '_'+type in item and '._' not in item:
@@ -61,27 +128,30 @@ class Icarus_Data_Analysis():
                 i+=1
         return dic
 
-    def combine_log_entries(self,history_log):
-        #find maximum period indexes
+    def combine_log_entries(self,data):
+        """
+        combines all entries associated with one period in one entry.
+        """
         max_period = int(max(history_log[:,2]))
-        period = []
+        data = []
         for i in list(range(max_period+1)):
+            self.i = i
             temp = []
             for j in range(len(self.log_header)):
-                value = history_log[where(history_log[:,2] == i),:][:,:,j][~isnan(history_log[where(history_log[:,2] == i),:][:,:,j])]
+                value = data[where(raw_data[:,2] == i),:][:,:,j][~isnan(raw_data[where(raw_data[:,2] == i),:][:,:,j])]
                 if len(value) == 1:
-                    temp.append(float(history_log[where(history_log[:,2] == i),:][:,:,j][~isnan(history_log[where(history_log[:,2] == i),:][:,:,j])]))
+                    temp.append(float(raw_data[where(raw_data[:,2] == i),:][:,:,j][~isnan(raw_data[where(raw_data[:,2] == i),:][:,:,j])]))
                 elif len(value) == 0:
                     temp.append(nan)
                 elif len(value) >1:
-                    temp.append(float(history_log[where(history_log[:,2] == i),:][:,:,j][~isnan(history_log[where(history_log[:,2] == i),:][:,:,j])][0]))
-            period.append(temp)
-        return asarray(period)
+                    temp.append(float(raw_data[where(raw_data[:,2] == i),:][:,:,j][~isnan(raw_data[where(raw_data[:,2] == i),:][:,:,j])][0]))
+            data.append(temp)
+        return asarray(data)
 
     def get_log_vector(self,param = 'None'):
         from numpy import squeeze
         try:
-            idx = dataset_1.log_header.index(param)
+            idx = self.log_header.index(param)
         except:
             print("param %r doesn't exist" %param)
             idx = None
@@ -89,80 +159,30 @@ class Icarus_Data_Analysis():
             vector = self.period[:,idx]
         return vector
 
-    def get_trace(self,period = 0,name = ''):
+    def get_trace(self,period = 0, type = ''):
         import os
         from numpy import genfromtxt, transpose
         filename = 'some_nonexisting_file.x'
-        for item in self.lists[name]:
-            print(item)
+        for item in self.trace_lists[type]:
             if item[1] == str(period):
                 filename = item[3]
-        filepath = self.folder + '/buffer_files/'+filename
+        filepath = self.folder + 'buffer_files/'+filename
         exists = os.path.isfile(filepath)
         if exists:
             data = transpose(genfromtxt(filepath,delimiter = ','))
-            x = data[:,0]
-            sample = data[:,1]
-            target = data[:,2]
         else:
             data = None
         return data
 
-    def test_slow_leak(self):
-        test_data_folder = '/Users/femto-13/NMR_data/cooling-data/2019-04-12-19-05-23/'
-        lst = event_detector.get_cooling_traces_lst(folder = test_data_folder)
-        data = event_detector.get_cooling_traces(lst,test_data_folder,0)
-
 if __name__ == '__main__':
+    import unittest
+    from pdb import pm
+    import os
     ##Examples of commands
     ## to get a trace: dataset_1.get_trace(i,'pre') -> return a pressurization trace of all 10 channels at period i
     ## to get a vector from log file for given parameter: dataset_1.get_log_vector(param = 'tSwitchDepressure_1')
-    dataset_1 = Icarus_Data_Analysis(folder)
-    #folder = '/Users/femto-13/NMR_data/2019-05-07-15-37-32/'
-    #dataset_2 = Icarus_Data_Analysis(folder)
-
-    dataset_1.init()
-    dic = dataset_1.history_log
-    plt.figure()
-    plt.subplot(321)
-    plt.title('Depressure in kbar')
-    plt.plot(dataset_1.get_log_vector(param = 'pDepre_0'),'or',label = 'Sample')
-    plt.legend()
-    plt.subplot(323)
-    plt.title('Depressurization Time to Switch in ms')
-    plt.plot(dataset_1.get_log_vector(param = 'tSwitchDepressure_1'),'or',label = 'Sample')
-    plt.plot(dataset_1.get_log_vector(param = 'tSwitchDepressure_0'),'ob',label = 'Origin')
-    plt.plot(dataset_1.get_log_vector(param = 'tSwitchDepressureEst_0'),'og',label = 'Sample Est.')
-    plt.legend()
-    plt.subplot(325)
-    plt.title('Depressurization Slope in kbar/ms')
-    plt.plot(dataset_1.get_log_vector(param = 'gradientDepressure_1'),'or',label = 'Sample')
-    plt.plot(dataset_1.get_log_vector(param = 'gradientDepressure_0'),'ob',label = 'Origin')
-    plt.plot(dataset_1.get_log_vector(param = 'gradientDepressureEst_0'),'og',label = 'Sample Est.')
-    plt.legend()
-
-    plt.subplot(322)
-    plt.title('Pressure in kbar')
-    plt.plot(dataset_1.get_log_vector(param = 'pPre_after_0'),'or',label = 'Sample')
-    plt.legend()
-    plt.subplot(324)
-    plt.title('Pressurization Time to Switch in ms')
-    plt.plot(dataset_1.get_log_vector(param = 'tSwitchPressure_1'),'or',label = 'Sample')
-    plt.plot(dataset_1.get_log_vector(param = 'tSwitchPressure_0'),'ob',label = 'Origin')
-    plt.plot(dataset_1.get_log_vector(param = 'tSwitchPressureEst_0'),'og',label = 'Sample Est.')
-    plt.legend()
-    plt.subplot(326)
-    plt.title('Pressurization Slope in kbar/ms')
-    plt.plot(dataset_1.get_log_vector(param = 'gradientPressure_1'),'or',label = 'Sample')
-    plt.plot(dataset_1.get_log_vector(param = 'gradientPressure_0'),'ob',label = 'Origin')
-    plt.plot(dataset_1.get_log_vector(param = 'gradientPressureEst_0'),'og',label = 'Sample Est.')
-    plt.legend()
-    # print('tSwitchDepressure_0: %r , tSwitchDepressure_1: %r , tSwitchDepressureEst_0: %r' %(nanmean(dic[b'tSwitchDepressure_0']),nanmean(dic[b'tSwitchDepressure_1']),nanmean(dic[b'tSwitchDepressureEst_0'])))
-    # print(nanmean(dic[b'tSwitchDepressureEst_0'])-nanmean(dic[b'tSwitchDepressure_1']))
-    # print('tSwitchPressure_0: %r , tSwitchPressure_1: %r , tSwitchPressureEst_0: %r' %(nanmean(dic[b'tSwitchPressure_0']),nanmean(dic[b'tSwitchPressure_1']),nanmean(dic[b'tSwitchPressureEst_0'])))
-    # print(nanmean(dic[b'tSwitchPressureEst_0'])-nanmean(dic[b'tSwitchPressure_1']))
-    #
-    # print('gradientDepressure_0: %r , gradientDepressure_1: %r , gradientDepressureEst_0: %r' %(nanmean(dic[b'gradientDepressure_0']),nanmean(dic[b'gradientDepressure_1']),nanmean(dic[b'gradientDepressureEst_0'])))
-    # print(nanmean(dic[b'gradientDepressure_0'])/nanmean(dic[b'gradientDepressure_1']))
-    # print('gradientPressure_0: %r , gradientPressure_1: %r , gradientPressureEst_0: %r' %(nanmean(dic[b'gradientPressure_0']),nanmean(dic[b'gradientPressure_1']),nanmean(dic[b'gradientPressureEst_0'])))
-    # print(nanmean(dic[b'gradientPressure_0'])/nanmean(dic[b'gradientPressure_1']))
+    main_folder = '/Volumes/C/Pressure-Jump-NMR/icarus-ii-50/'
+    folder = 'test_dataset/'
+    dataset = Dataset()
+    dataset.folder = folder
+    dataset.init()
